@@ -1,6 +1,49 @@
+import urllib.parse
+import httpx
 import reflex as rx
+from starlette.requests import Request
+from starlette.responses import StreamingResponse, JSONResponse
 from instagram_story_downloader.states.downloader import DownloaderState
 from instagram_story_downloader.components.media_card import media_card
+
+# Allowlist of CDN host suffixes that we're willing to proxy.
+_ALLOWED_CDN_HOSTS = (
+    ".fbcdn.net",
+    ".cdninstagram.com",
+    "instagram.com",
+)
+
+
+async def proxy_download(request: Request):
+    """Stream an Instagram CDN URL back to the browser as a file download."""
+    url = request.query_params.get("url", "")
+    filename = request.query_params.get("filename", "download")
+    parsed = urllib.parse.urlparse(url)
+    if not url or not any(parsed.netloc.endswith(h) for h in _ALLOWED_CDN_HOSTS):
+        return JSONResponse({"error": "URL not allowed"}, status_code=400)
+
+    safe_filename = urllib.parse.quote(filename)
+    client = httpx.AsyncClient(follow_redirects=True, timeout=60)
+    upstream = await client.send(
+        client.build_request("GET", url), stream=True
+    )
+    content_type = upstream.headers.get("content-type", "application/octet-stream")
+    headers = {
+        "Content-Disposition": f'attachment; filename="{safe_filename}"',
+    }
+    cl = upstream.headers.get("content-length")
+    if cl:
+        headers["Content-Length"] = cl
+
+    async def _stream():
+        try:
+            async for chunk in upstream.aiter_bytes(65536):
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(_stream(), media_type=content_type, headers=headers)
 
 
 def index() -> rx.Component:
@@ -36,7 +79,7 @@ def index() -> rx.Component:
                                     class_name="h-2 w-2 rounded-full bg-green-500"
                                 ),
                                 rx.el.span(
-                                    f"Authenticated as @{DownloaderState.session_username}",
+                                    f"Session detected via {DownloaderState.session_username} cookies",
                                     class_name="text-sm font-medium text-green-700",
                                 ),
                                 class_name="flex items-center gap-2 bg-green-50 px-4 py-2 rounded-full border border-green-100",
@@ -46,10 +89,10 @@ def index() -> rx.Component:
                                     class_name="h-2 w-2 rounded-full bg-amber-500"
                                 ),
                                 rx.el.span(
-                                    "No session loaded - only public stories accessible",
+                                    "No browser session detected — log in to Instagram in Chrome/Firefox first",
                                     class_name="text-sm font-medium text-amber-700",
                                 ),
-                                title="Create a session using 'instaloader --login username' in terminal",
+                                title="Log in to Instagram in Chrome or Firefox, then refresh this page",
                                 class_name="flex items-center gap-2 bg-amber-50 px-4 py-2 rounded-full border border-amber-100 cursor-help",
                             ),
                         ),
@@ -207,4 +250,8 @@ app = rx.App(
         ),
     ],
 )
+
+# Register the proxy download endpoint on the Reflex Starlette backend.
+app._api.add_route("/proxy-download", proxy_download, methods=["GET"])
+
 app.add_page(index, route="/", on_load=DownloaderState.load_session)
