@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "instagram-story-downloader"
+version = "0.1.0"
+description = "Instagram Story Downloader built with Reflex"
+authors = []
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "~3.11"
+reflex = "0.8.26"
+instaloader = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
