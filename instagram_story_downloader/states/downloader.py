@@ -484,6 +484,9 @@ class DownloaderState(rx.State):
     active_tab: str = "url"  # url | archive
     archive_loading_progress: int = 0
     archive_loading_total: int = 0
+    loading_month: str = ""  # year_month of the card currently being fetched
+    result_source: str = ""  # "url" | "archive"
+    result_source_label: str = ""  # URL string or month label e.g. "November 2018"
 
     @rx.var
     def status_label(self) -> str:
@@ -654,6 +657,8 @@ class DownloaderState(rx.State):
             if media_items:
                 self.media_items = media_items
                 self.status = "ready"
+                self.result_source = "url"
+                self.result_source_label = url
                 if used_browser != "none":
                     self.session_loaded = True
                     self.session_username = used_browser
@@ -841,6 +846,7 @@ class DownloaderState(rx.State):
             return
 
         self.is_loading = True
+        self.loading_month = year_month
         self.status = "analyzing"
         self.error_message = ""
         self.media_items = []
@@ -892,10 +898,21 @@ class DownloaderState(rx.State):
             self.status = "ready"
             self.session_loaded = True
             self.session_username = used_browser
+            # Set source label for the results header
+            for m in self.archive_months:
+                if m["year_month"] == year_month:
+                    self.result_source = "archive"
+                    self.result_source_label = m["label"]
+                    break
         else:
             self.status = "error"
             self.error_message = "No media found for the selected month."
 
         self.archive_loading_progress = len(day_ids)
         self.archive_loading_total = 0
+        self.loading_month = ""
         self.is_loading = False
+        # Scroll results into view after content is ready
+        yield rx.call_script(
+            "setTimeout(()=>{var el=document.getElementById('media-results');if(el)el.scrollIntoView({behavior:'smooth',block:'start'});},100)"
+        )

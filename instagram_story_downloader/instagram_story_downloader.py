@@ -51,16 +51,35 @@ async def proxy_download(request: Request):
 
 def archive_month_card(month: ArchiveMonthItem) -> rx.Component:
     """A clickable card for one calendar month of archived stories."""
+    is_loading = DownloaderState.loading_month == month["year_month"]
     return rx.el.button(
-        rx.icon("calendar", class_name="h-6 w-6 text-indigo-500 mb-2"),
-        rx.el.p(month["label"], class_name="font-semibold text-gray-800 text-sm"),
-        rx.el.p(
-            rx.el.span(month["count"]),
-            rx.el.span(" reels"),
-            class_name="text-xs text-indigo-600 font-medium mt-0.5",
+        # Spinner overlay shown while this specific month is loading
+        rx.cond(
+            is_loading,
+            rx.el.div(
+                rx.el.div(
+                    class_name="animate-spin h-5 w-5 border-2 border-indigo-600 border-t-transparent rounded-full",
+                ),
+                rx.el.span("Loading...", class_name="text-xs text-indigo-600 font-semibold mt-1"),
+                class_name="absolute inset-0 flex flex-col items-center justify-center bg-white/90 rounded-xl z-10",
+            ),
+            rx.fragment(
+                rx.icon("calendar", class_name="h-6 w-6 text-indigo-500 mb-2"),
+                rx.el.p(month["label"], class_name="font-semibold text-gray-800 text-sm"),
+                rx.el.p(
+                    rx.el.span(month["count"]),
+                    rx.el.span(" reels"),
+                    class_name="text-xs text-indigo-600 font-medium mt-0.5",
+                ),
+            ),
         ),
         on_click=lambda: DownloaderState.select_archive_month(month["year_month"]),
-        class_name="flex flex-col items-center py-4 px-3 bg-white border border-gray-200 rounded-xl hover:border-indigo-400 hover:shadow-md transition-all duration-200 cursor-pointer w-full",
+        disabled=DownloaderState.loading_month != "",
+        class_name=rx.cond(
+            is_loading,
+            "relative flex flex-col items-center py-4 px-3 bg-white border-2 border-indigo-400 rounded-xl shadow-md transition-all duration-200 cursor-wait w-full",
+            "relative flex flex-col items-center py-4 px-3 bg-white border border-gray-200 rounded-xl hover:border-indigo-400 hover:shadow-md transition-all duration-200 cursor-pointer w-full",
+        ),
     )
 
 
@@ -277,6 +296,33 @@ def index() -> rx.Component:
                 rx.el.section(
                     rx.el.div(
                         rx.el.div(
+                            # Source context badge
+                            rx.cond(
+                                DownloaderState.result_source != "",
+                                rx.el.div(
+                                    rx.cond(
+                                        DownloaderState.result_source == "url",
+                                        rx.el.div(
+                                            rx.icon("link", class_name="h-3.5 w-3.5 text-gray-400 shrink-0"),
+                                            rx.el.span(
+                                                DownloaderState.result_source_label,
+                                                class_name="text-xs text-gray-400 truncate max-w-xs sm:max-w-lg",
+                                            ),
+                                            class_name="flex items-center gap-1.5",
+                                        ),
+                                        rx.el.div(
+                                            rx.icon("calendar", class_name="h-3.5 w-3.5 text-indigo-400 shrink-0"),
+                                            rx.el.span(
+                                                DownloaderState.result_source_label,
+                                                class_name="text-xs text-indigo-600 font-semibold",
+                                            ),
+                                            class_name="flex items-center gap-1.5",
+                                        ),
+                                    ),
+                                    class_name="mb-3",
+                                ),
+                                None,
+                            ),
                             rx.el.div(
                                 rx.el.p(
                                     f"Found {DownloaderState.media_items.length()} media items ({DownloaderState.video_count} videos, {DownloaderState.image_count} images)",
@@ -321,7 +367,8 @@ def index() -> rx.Component:
                             ),
                         ),
                         class_name="animate-in fade-in slide-in-from-bottom-4 duration-500",
-                    )
+                    ),
+                    id="media-results",
                 ),
                 rx.cond(
                     DownloaderState.status == "idle",
