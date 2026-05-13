@@ -47,6 +47,8 @@ class MediaItem(TypedDict):
     selected: bool
     qualities: list[QualityDict]
     selected_quality_index: int
+    taken_at: int       # unix timestamp; 0 if unknown
+    date_label: str     # pre-formatted short date, e.g. "May 14"; "" if unknown
 
 
 class ArchiveMonthItem(TypedDict):
@@ -105,6 +107,17 @@ def _extract_with_browser(url: str, browser: str) -> dict:
 def _build_media_item(entry: dict, username: str, media_id: str) -> MediaItem:
     """Convert a yt-dlp info dict entry into a MediaItem."""
     formats = entry.get("formats", [])
+    _taken_at: int = (
+        entry.get("taken_at")
+        or entry.get("release_timestamp")
+        or entry.get("timestamp")
+        or 0
+    )
+    if _taken_at:
+        _dt = datetime.datetime.fromtimestamp(_taken_at)
+        _date_label = _dt.strftime("%b %-d, %Y")
+    else:
+        _date_label = ""
     thumbnail = entry.get("thumbnail", "") or _best_thumbnail(
         entry.get("thumbnails", [])
     )
@@ -147,6 +160,8 @@ def _build_media_item(entry: dict, username: str, media_id: str) -> MediaItem:
             "selected": True,
             "qualities": qualities,
             "selected_quality_index": 0,
+            "taken_at": _taken_at,
+            "date_label": _date_label,
         }
 
     # Priority 2: DASH video formats (video codec present, audio separate).
@@ -182,6 +197,8 @@ def _build_media_item(entry: dict, username: str, media_id: str) -> MediaItem:
             "selected": True,
             "qualities": qualities2,
             "selected_quality_index": 0,
+            "taken_at": _taken_at,
+            "date_label": _date_label,
         }
 
     # Priority 3: Image (no video format found)
@@ -200,6 +217,8 @@ def _build_media_item(entry: dict, username: str, media_id: str) -> MediaItem:
         "selected": True,
         "qualities": [{"label": "Original Quality", "url": image_url}],
         "selected_quality_index": 0,
+        "taken_at": _taken_at,
+        "date_label": _date_label,
     }
 
 
@@ -436,6 +455,7 @@ def _reel_to_entries(reel: dict, reel_id: str) -> list[dict]:
             "uploader_id": username,
             "thumbnail": thumbnail,
             "thumbnails": thumbnails,
+            "taken_at": item.get("taken_at") or 0,
         }
         if media_type == 2:  # VIDEO
             video_versions = sorted(
@@ -532,9 +552,18 @@ class DownloaderState(rx.State):
             return {
                 "id": "", "type": "image", "url": "", "thumbnail_url": "",
                 "filename": "", "selected": False, "qualities": [], "selected_quality_index": 0,
+                "taken_at": 0, "date_label": "",
             }
         idx = max(0, min(self.lightbox_index, len(self.media_items) - 1))
         return self.media_items[idx]
+
+    @rx.var
+    def lightbox_date_label(self) -> str:
+        ts = self.lightbox_item.get("taken_at") or 0
+        if not ts:
+            return ""
+        dt = datetime.datetime.fromtimestamp(ts)
+        return dt.strftime("%B %-d, %Y")
 
     @rx.var
     def lightbox_counter(self) -> str:

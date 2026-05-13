@@ -39,6 +39,16 @@ def media_card(item: MediaItem) -> rx.Component:
                 class_name="absolute inset-0 z-10 cursor-pointer",
                 on_click=lambda: DownloaderState.open_lightbox_for_item(item["id"]),
             ),
+            # Date badge (bottom-left corner of thumbnail)
+            rx.cond(
+                item["date_label"] != "",
+                rx.el.div(
+                    item["date_label"],
+                    class_name="absolute bottom-2 left-2 z-20 text-xs font-semibold text-white pointer-events-none",
+                    style={"background": "rgba(0,0,0,0.55)", "borderRadius": "4px", "padding": "2px 6px", "backdropFilter": "blur(4px)"},
+                ),
+                rx.fragment(),
+            ),
             class_name=rx.cond(
                 item["type"] == "video",
                 "vc-thumb relative overflow-hidden rounded-t-xl h-48",

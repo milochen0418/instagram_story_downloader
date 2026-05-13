@@ -121,6 +121,10 @@ def lightbox_modal() -> rx.Component:
                     class_name="text-white/70 hover:text-white px-4 py-2 rounded hover:bg-white/10 transition-colors disabled:opacity-25 disabled:cursor-not-allowed",
                     title="Previous (←)",
                 ),
+                rx.el.span(
+                    DownloaderState.lightbox_date_label,
+                    class_name="text-white/50 text-xs font-medium tabular-nums",
+                ),
                 rx.el.button(
                     rx.icon("chevron-right", class_name="h-5 w-5"),
                     on_click=DownloaderState.lightbox_next,
