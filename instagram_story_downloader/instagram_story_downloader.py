@@ -3,7 +3,10 @@ import httpx
 import reflex as rx
 from starlette.requests import Request
 from starlette.responses import StreamingResponse, JSONResponse
-from instagram_story_downloader.states.downloader import DownloaderState
+from instagram_story_downloader.states.downloader import (
+    DownloaderState,
+    ArchiveMonthItem,
+)
 from instagram_story_downloader.components.media_card import media_card
 
 # Allowlist of CDN host suffixes that we're willing to proxy.
@@ -44,6 +47,88 @@ async def proxy_download(request: Request):
             await client.aclose()
 
     return StreamingResponse(_stream(), media_type=content_type, headers=headers)
+
+
+def archive_month_card(month: ArchiveMonthItem) -> rx.Component:
+    """A clickable card for one calendar month of archived stories."""
+    return rx.el.button(
+        rx.icon("calendar", class_name="h-6 w-6 text-indigo-500 mb-2"),
+        rx.el.p(month["label"], class_name="font-semibold text-gray-800 text-sm"),
+        rx.el.p(
+            rx.el.span(month["count"]),
+            rx.el.span(" reels"),
+            class_name="text-xs text-indigo-600 font-medium mt-0.5",
+        ),
+        on_click=lambda: DownloaderState.select_archive_month(month["year_month"]),
+        class_name="flex flex-col items-center py-4 px-3 bg-white border border-gray-200 rounded-xl hover:border-indigo-400 hover:shadow-md transition-all duration-200 cursor-pointer w-full",
+    )
+
+
+def archive_browser_section() -> rx.Component:
+    """The archive-browser panel shown when the 'Browse Archive' tab is active."""
+    return rx.el.div(
+        # Idle: show load button
+        rx.cond(
+            DownloaderState.archive_status == "idle",
+            rx.el.div(
+                rx.el.p(
+                    "Browse your archived stories month by month. Make sure you're logged in to Instagram in Chrome or Firefox first.",
+                    class_name="text-gray-500 text-sm mb-6 text-center",
+                ),
+                rx.el.button(
+                    rx.icon("archive", class_name="h-5 w-5"),
+                    "Load My Archive",
+                    on_click=DownloaderState.load_archive_months,
+                    class_name="px-8 py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-colors flex items-center gap-2 mx-auto shadow-md shadow-indigo-100",
+                ),
+                class_name="flex flex-col items-center py-12",
+            ),
+        ),
+        # Loading months spinner
+        rx.cond(
+            DownloaderState.archive_status == "loading_months",
+            rx.el.div(
+                rx.el.div(
+                    class_name="animate-spin h-10 w-10 border-4 border-indigo-600 border-t-transparent rounded-full mb-4 mx-auto"
+                ),
+                rx.el.p(
+                    "Loading your archive list...",
+                    class_name="text-gray-500 text-center",
+                ),
+                class_name="py-16",
+            ),
+        ),
+        # Error
+        rx.cond(
+            DownloaderState.archive_status == "error_months",
+            rx.el.div(
+                rx.el.div(
+                    rx.icon("circle-alert", class_name="h-5 w-5 shrink-0"),
+                    rx.el.p(DownloaderState.archive_error),
+                    class_name="flex items-center gap-3 p-4 bg-red-50 text-red-700 rounded-xl border border-red-100 mb-4",
+                ),
+                rx.el.button(
+                    "Try Again",
+                    on_click=DownloaderState.load_archive_months,
+                    class_name="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition-colors mx-auto block",
+                ),
+            ),
+        ),
+        # Month grid
+        rx.cond(
+            DownloaderState.archive_status == "ready_months",
+            rx.el.div(
+                rx.el.p(
+                    f"Found {DownloaderState.archive_months.length()} months — click a month to load its stories",
+                    class_name="text-gray-500 text-sm text-center mb-5",
+                ),
+                rx.el.div(
+                    rx.foreach(DownloaderState.archive_months, archive_month_card),
+                    class_name="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3",
+                ),
+            ),
+        ),
+    )
 
 
 def index() -> rx.Component:
@@ -98,35 +183,64 @@ def index() -> rx.Component:
                         ),
                         class_name="mb-6 flex justify-center",
                     ),
-                    rx.el.form(
-                        rx.el.div(
-                            rx.el.div(
-                                rx.icon(
-                                    "link",
-                                    class_name="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400",
-                                ),
-                                rx.el.input(
-                                    name="story_url",
-                                    placeholder="Paste Instagram Story URL here...",
-                                    class_name="w-full pl-12 pr-4 py-4 rounded-xl border border-gray-200 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-600 transition-all outline-none text-lg text-gray-800",
-                                ),
-                                class_name="relative flex-1",
+                    # Tab buttons
+                    rx.el.div(
+                        rx.el.button(
+                            rx.icon("link", class_name="h-4 w-4"),
+                            "Single Story URL",
+                            on_click=DownloaderState.switch_to_url_tab,
+                            class_name=rx.cond(
+                                DownloaderState.active_tab == "url",
+                                "flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm bg-indigo-600 text-white shadow-sm",
+                                "flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors",
                             ),
-                            rx.el.button(
-                                rx.cond(
-                                    DownloaderState.is_loading,
-                                    rx.el.div(
-                                        class_name="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"
-                                    ),
-                                    "Analyze Story",
-                                ),
-                                type="submit",
-                                disabled=DownloaderState.is_loading,
-                                class_name="px-8 py-4 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-colors disabled:opacity-70 disabled:cursor-not-allowed whitespace-nowrap shadow-lg shadow-indigo-100",
-                            ),
-                            class_name="flex flex-col sm:flex-row gap-4",
                         ),
-                        on_submit=DownloaderState.handle_submit,
+                        rx.el.button(
+                            rx.icon("archive", class_name="h-4 w-4"),
+                            "Browse Archive",
+                            on_click=DownloaderState.switch_to_archive_tab,
+                            class_name=rx.cond(
+                                DownloaderState.active_tab == "archive",
+                                "flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm bg-indigo-600 text-white shadow-sm",
+                                "flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-colors",
+                            ),
+                        ),
+                        class_name="flex gap-2 mb-6 border-b border-gray-100 pb-4",
+                    ),
+                    # Conditional tab content
+                    rx.cond(
+                        DownloaderState.active_tab == "url",
+                        rx.el.form(
+                            rx.el.div(
+                                rx.el.div(
+                                    rx.icon(
+                                        "link",
+                                        class_name="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400",
+                                    ),
+                                    rx.el.input(
+                                        name="story_url",
+                                        placeholder="Paste Instagram Story or Archive URL here...",
+                                        class_name="w-full pl-12 pr-4 py-4 rounded-xl border border-gray-200 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-600 transition-all outline-none text-lg text-gray-800",
+                                    ),
+                                    class_name="relative flex-1",
+                                ),
+                                rx.el.button(
+                                    rx.cond(
+                                        DownloaderState.is_loading,
+                                        rx.el.div(
+                                            class_name="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"
+                                        ),
+                                        "Analyze Story",
+                                    ),
+                                    type="submit",
+                                    disabled=DownloaderState.is_loading,
+                                    class_name="px-8 py-4 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-colors disabled:opacity-70 disabled:cursor-not-allowed whitespace-nowrap shadow-lg shadow-indigo-100",
+                                ),
+                                class_name="flex flex-col sm:flex-row gap-4",
+                            ),
+                            on_submit=DownloaderState.handle_submit,
+                        ),
+                        archive_browser_section(),
                     ),
                     class_name="max-w-3xl mx-auto",
                 ),
@@ -140,6 +254,23 @@ def index() -> rx.Component:
                     class_name="max-w-3xl mx-auto mb-8 p-4 bg-red-50 text-red-700 rounded-xl flex items-center gap-3 border border-red-100 animate-in fade-in slide-in-from-top-2",
                 ),
                 None,
+            ),
+            # Loading indicator (URL analysis or archive month loading)
+            rx.cond(
+                DownloaderState.is_loading,
+                rx.el.div(
+                    rx.el.div(
+                        rx.el.div(
+                            class_name="animate-spin h-10 w-10 border-4 border-indigo-600 border-t-transparent rounded-full mb-4 mx-auto"
+                        ),
+                        rx.el.p(
+                            DownloaderState.status_label,
+                            class_name="text-gray-500 text-center font-medium",
+                        ),
+                        class_name="flex flex-col items-center py-16",
+                    ),
+                    class_name="max-w-3xl mx-auto",
+                ),
             ),
             rx.cond(
                 DownloaderState.status == "ready",
@@ -194,19 +325,23 @@ def index() -> rx.Component:
                 ),
                 rx.cond(
                     DownloaderState.status == "idle",
-                    rx.el.div(
+                    rx.cond(
+                        DownloaderState.active_tab == "url",
                         rx.el.div(
-                            rx.icon(
-                                "inbox",
-                                class_name="h-16 w-16 text-gray-200 mb-4",
+                            rx.el.div(
+                                rx.icon(
+                                    "inbox",
+                                    class_name="h-16 w-16 text-gray-200 mb-4",
+                                ),
+                                rx.el.p(
+                                    "Enter a story URL above to begin analysis",
+                                    class_name="text-gray-400 font-medium",
+                                ),
+                                class_name="flex flex-col items-center justify-center py-24 border-2 border-dashed border-gray-100 rounded-3xl",
                             ),
-                            rx.el.p(
-                                "Enter a story URL above to begin analysis",
-                                class_name="text-gray-400 font-medium",
-                            ),
-                            class_name="flex flex-col items-center justify-center py-24 border-2 border-dashed border-gray-100 rounded-3xl",
+                            class_name="max-w-3xl mx-auto",
                         ),
-                        class_name="max-w-3xl mx-auto",
+                        None,
                     ),
                     None,
                 ),
