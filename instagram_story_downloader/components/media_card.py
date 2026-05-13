@@ -4,22 +4,46 @@ from instagram_story_downloader.states.downloader import DownloaderState, MediaI
 
 def media_card(item: MediaItem) -> rx.Component:
     return rx.el.div(
+        # ── Thumbnail / hover-play area ──────────────────────────────
         rx.el.div(
+            # Poster image
+            rx.el.img(
+                src=item["thumbnail_url"],
+                class_name="absolute inset-0 h-full w-full object-cover",
+            ),
+            # Hidden video for hover-preview (video items only)
+            rx.cond(
+                item["type"] == "video",
+                rx.el.video(
+                    data_src=item["url"],
+                    muted=True,
+                    loop=True,
+                    playsinline=True,
+                    class_name="absolute inset-0 w-full h-full object-cover pointer-events-none",
+                    style={"opacity": "0", "transition": "opacity 0.3s"},
+                ),
+                rx.fragment(),
+            ),
+            # Play icon overlay (video items only; fades out while video plays)
             rx.cond(
                 item["type"] == "video",
                 rx.el.div(
-                    rx.icon(
-                        "play", class_name="h-10 w-10 text-white opacity-80"
-                    ),
-                    class_name="absolute inset-0 flex items-center justify-center bg-black/20",
+                    rx.icon("play", class_name="h-10 w-10 text-white opacity-80"),
+                    class_name="play-icon-overlay absolute inset-0 flex items-center justify-center bg-black/20 pointer-events-none",
+                    style={"transition": "opacity 0.3s"},
                 ),
                 None,
             ),
-            rx.el.img(
-                src=item["thumbnail_url"],
-                class_name="h-48 w-full object-cover transition-transform duration-500 hover:scale-110",
+            # Transparent click layer — opens lightbox
+            rx.el.div(
+                class_name="absolute inset-0 z-10 cursor-pointer",
+                on_click=lambda: DownloaderState.open_lightbox_for_item(item["id"]),
             ),
-            class_name="relative overflow-hidden rounded-t-xl",
+            class_name=rx.cond(
+                item["type"] == "video",
+                "vc-thumb relative overflow-hidden rounded-t-xl h-48",
+                "relative overflow-hidden rounded-t-xl h-48",
+            ),
         ),
         rx.el.div(
             rx.el.div(

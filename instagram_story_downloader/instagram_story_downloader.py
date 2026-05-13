@@ -49,6 +49,83 @@ async def proxy_download(request: Request):
     return StreamingResponse(_stream(), media_type=content_type, headers=headers)
 
 
+def lightbox_modal() -> rx.Component:
+    """Full-screen lightbox player for previewing media items."""
+    return rx.cond(
+        DownloaderState.lightbox_open,
+        rx.el.div(
+            # Backdrop — click closes the modal
+            rx.el.div(
+                class_name="absolute inset-0 z-0 cursor-pointer",
+                on_click=DownloaderState.close_lightbox,
+            ),
+            # Floating content panel (higher z-index than backdrop, so clicks stay here)
+            rx.el.div(
+                # ── Top bar: counter + close ─────────────────────
+                rx.el.div(
+                    rx.el.span(
+                        DownloaderState.lightbox_counter,
+                        class_name="text-white/60 text-sm font-medium tabular-nums",
+                    ),
+                    rx.el.button(
+                        rx.icon("x", class_name="h-5 w-5"),
+                        on_click=DownloaderState.close_lightbox,
+                        class_name="text-white/70 hover:text-white p-2 rounded-full hover:bg-white/10 transition-colors",
+                        title="Close (Esc)",
+                    ),
+                    class_name="flex items-center justify-between px-4 py-3 shrink-0",
+                ),
+                # ── Media player ─────────────────────────────────
+                rx.el.div(
+                    rx.cond(
+                        DownloaderState.lightbox_item["type"] == "video",
+                        rx.el.video(
+                            src=DownloaderState.lightbox_item["url"],
+                            controls=True,
+                            autoplay=True,
+                            loop=False,
+                            class_name="max-h-[72vh] max-w-full rounded-lg shadow-2xl",
+                            id="lightbox-video",
+                        ),
+                        rx.el.img(
+                            src=DownloaderState.lightbox_item["url"],
+                            class_name="max-h-[72vh] max-w-full object-contain rounded-lg shadow-2xl",
+                        ),
+                    ),
+                    class_name="flex items-center justify-center px-4 flex-1 min-h-0",
+                ),
+                # ── Bottom bar: prev / filename / next ───────────
+                rx.el.div(
+                    rx.el.button(
+                        rx.icon("chevron-left", class_name="h-6 w-6"),
+                        on_click=DownloaderState.lightbox_prev,
+                        disabled=~DownloaderState.lightbox_has_prev,
+                        class_name="text-white/70 hover:text-white p-3 rounded-full hover:bg-white/10 transition-colors disabled:opacity-25 disabled:cursor-not-allowed",
+                        title="Previous (←)",
+                    ),
+                    rx.el.p(
+                        DownloaderState.lightbox_item["filename"],
+                        class_name="text-white/40 text-xs truncate max-w-xs text-center",
+                    ),
+                    rx.el.button(
+                        rx.icon("chevron-right", class_name="h-6 w-6"),
+                        on_click=DownloaderState.lightbox_next,
+                        disabled=~DownloaderState.lightbox_has_next,
+                        class_name="text-white/70 hover:text-white p-3 rounded-full hover:bg-white/10 transition-colors disabled:opacity-25 disabled:cursor-not-allowed",
+                        title="Next (→)",
+                    ),
+                    class_name="flex items-center justify-between px-4 py-3 shrink-0",
+                ),
+                id="lightbox-wrapper",
+                class_name="relative z-10 flex flex-col w-full max-w-3xl mx-4 max-h-screen",
+            ),
+            class_name="fixed inset-0 flex items-center justify-center bg-black/92",
+            style={"zIndex": "9999"},
+        ),
+        rx.fragment(),
+    )
+
+
 def archive_month_card(month: ArchiveMonthItem) -> rx.Component:
     """A clickable card for one calendar month of archived stories."""
     is_loading = DownloaderState.loading_month == month["year_month"]
@@ -415,6 +492,7 @@ def index() -> rx.Component:
             ),
             class_name="max-w-5xl mx-auto px-4 py-12",
         ),
+        lightbox_modal(),
         class_name="min-h-screen bg-white font-['Inter']",
     )
 
@@ -436,4 +514,8 @@ app = rx.App(
 # Register the proxy download endpoint on the Reflex Starlette backend.
 app._api.add_route("/proxy-download", proxy_download, methods=["GET"])
 
-app.add_page(index, route="/", on_load=DownloaderState.load_session)
+app.add_page(
+    index,
+    route="/",
+    on_load=[DownloaderState.load_session, DownloaderState.setup_client_scripts],
+)

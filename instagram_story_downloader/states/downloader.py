@@ -487,6 +487,8 @@ class DownloaderState(rx.State):
     loading_month: str = ""  # year_month of the card currently being fetched
     result_source: str = ""  # "url" | "archive"
     result_source_label: str = ""  # URL string or month label e.g. "November 2018"
+    lightbox_open: bool = False
+    lightbox_index: int = 0
 
     @rx.var
     def status_label(self) -> str:
@@ -523,6 +525,30 @@ class DownloaderState(rx.State):
     @rx.var
     def selected_count(self) -> int:
         return len([item for item in self.media_items if item["selected"]])
+
+    @rx.var
+    def lightbox_item(self) -> MediaItem:
+        if not self.media_items:
+            return {
+                "id": "", "type": "image", "url": "", "thumbnail_url": "",
+                "filename": "", "selected": False, "qualities": [], "selected_quality_index": 0,
+            }
+        idx = max(0, min(self.lightbox_index, len(self.media_items) - 1))
+        return self.media_items[idx]
+
+    @rx.var
+    def lightbox_counter(self) -> str:
+        if not self.media_items:
+            return ""
+        return f"{self.lightbox_index + 1} / {len(self.media_items)}"
+
+    @rx.var
+    def lightbox_has_prev(self) -> bool:
+        return self.lightbox_index > 0
+
+    @rx.var
+    def lightbox_has_next(self) -> bool:
+        return self.lightbox_index < len(self.media_items) - 1
 
     @rx.event
     async def load_session(self):
@@ -747,6 +773,87 @@ class DownloaderState(rx.State):
     # ──────────────────────────────────────────────
     # Archive browser events
     # ──────────────────────────────────────────────
+
+    # ── Lightbox / media-preview events ─────────────────────────────
+
+    @rx.event
+    async def open_lightbox_for_item(self, item_id: str):
+        for i, m in enumerate(self.media_items):
+            if m["id"] == item_id:
+                self.lightbox_open = True
+                self.lightbox_index = i
+                yield rx.call_script(
+                    "setTimeout(function(){var el=document.getElementById('lightbox-wrapper');if(el)el.focus();},80)"
+                )
+                return
+
+    @rx.event
+    def close_lightbox(self):
+        self.lightbox_open = False
+
+    @rx.event
+    async def lightbox_prev(self):
+        if self.lightbox_index > 0:
+            self.lightbox_index -= 1
+            yield rx.call_script(
+                "var v=document.getElementById('lightbox-video');if(v){v.load();v.play().catch(function(){});}"
+            )
+
+    @rx.event
+    async def lightbox_next(self):
+        if self.lightbox_index < len(self.media_items) - 1:
+            self.lightbox_index += 1
+            yield rx.call_script(
+                "var v=document.getElementById('lightbox-video');if(v){v.load();v.play().catch(function(){});}"
+            )
+
+    @rx.event
+    def lightbox_key_nav(self, key: str):
+        if key == "ArrowLeft" and self.lightbox_index > 0:
+            self.lightbox_index -= 1
+        elif key == "ArrowRight" and self.lightbox_index < len(self.media_items) - 1:
+            self.lightbox_index += 1
+        elif key == "Escape":
+            self.lightbox_open = False
+
+    @rx.event
+    def setup_client_scripts(self):
+        yield rx.call_script(
+            """if(!window.__vcHover){
+  window.__vcHover=true;
+  document.addEventListener('mouseover',function(e){
+    var c=e.target&&e.target.closest&&e.target.closest('.vc-thumb');
+    if(!c)return;
+    var v=c.querySelector('video');
+    if(!v)return;
+    if(!v.src||v.src===window.location.href)v.src=v.dataset.src||'';
+    v.play().catch(function(){});
+    v.style.opacity='1';
+    var pi=c.querySelector('.play-icon-overlay');
+    if(pi)pi.style.opacity='0';
+  });
+  document.addEventListener('mouseout',function(e){
+    var c=e.target&&e.target.closest&&e.target.closest('.vc-thumb');
+    if(!c)return;
+    if(c.contains(e.relatedTarget))return;
+    var v=c.querySelector('video');
+    if(!v)return;
+    v.pause();
+    v.style.opacity='0';
+    var pi=c.querySelector('.play-icon-overlay');
+    if(pi)pi.style.opacity='1';
+  });
+  document.addEventListener('keydown',function(e){
+    var w=document.getElementById('lightbox-wrapper');
+    if(!w)return;
+    if(e.key==='ArrowLeft'){var b=w.querySelector('[title="Previous (\\u2190)"]');if(b&&!b.disabled)b.click();}
+    else if(e.key==='ArrowRight'){var b=w.querySelector('[title="Next (\\u2192)"]');if(b&&!b.disabled)b.click();}
+    else if(e.key==='Escape'){var b=w.querySelector('[title="Close (Esc)"]');if(b)b.click();}
+  });
+}"""
+        )
+
+    # ── Archive browser events ────────────────────────────────────────
 
     @rx.event
     def switch_to_url_tab(self):
