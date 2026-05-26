@@ -496,40 +496,37 @@ def _fetch_profile_info(
             except Exception as e:
                 logging.warning(f"_fetch_profile_info: highlights parse error: {e}")
 
-        # ── Step 4: convert CDN cover URLs → base64 data URIs ────────
-        # The Playwright page has instagram.com cookies; the user's browser
-        # (on localhost) does not, so raw CDN URLs fail to load.  Fetching
-        # them here and encoding as data URIs avoids the auth problem.
-        cover_urls = [c["cover_url"] for c in categories]
-        if any(cover_urls):
-            try:
-                data_uris = page.evaluate(
-                    """async (urls) => {
-                        return await Promise.all(urls.map(async (url) => {
-                            if (!url) return '';
-                            try {
-                                const r = await fetch(url, {credentials: 'include'});
-                                if (!r.ok) return '';
-                                const blob = await r.blob();
-                                return await new Promise((resolve) => {
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => resolve(reader.result || '');
-                                    reader.onerror  = () => resolve('');
-                                    reader.readAsDataURL(blob);
-                                });
-                            } catch(e) { return ''; }
-                        }));
-                    }""",
-                    cover_urls,
-                )
-                if isinstance(data_uris, list):
-                    for i, uri in enumerate(data_uris):
-                        if uri and i < len(categories):
-                            categories[i]["cover_url"] = uri
-            except Exception as e:
-                logging.warning(f"_fetch_profile_info: cover data-URI conversion error: {e}")
-
         browser.close()
+
+    # ── Step 4: convert CDN cover URLs → base64 data URIs ────────────
+    # JS fetch() in the Playwright page cannot read cross-origin image
+    # bodies from scontent.cdninstagram.com (CORS).  Use Python requests
+    # server-side instead — no CORS restrictions, no auth required since
+    # the CDN URLs are signed in the query string.
+    import base64 as _b64
+    import requests as _requests
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
+    _cover_headers = {
+        "User-Agent": _PW_UA,
+        "Referer": "https://www.instagram.com/",
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    }
+
+    def _to_data_uri(cat: dict) -> None:
+        raw = cat.get("cover_url", "")
+        if not raw or raw.startswith("data:"):
+            return
+        try:
+            resp = _requests.get(raw, headers=_cover_headers, timeout=10, allow_redirects=True)
+            if resp.ok and resp.content:
+                ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+                cat["cover_url"] = f"data:{ct};base64,{_b64.b64encode(resp.content).decode()}"
+        except Exception as exc:
+            logging.warning(f"_fetch_profile_info: cover fetch failed for {cat.get('label')!r}: {exc}")
+
+    with _TPE(max_workers=6) as pool:
+        list(pool.map(_to_data_uri, categories))
 
     if not categories:
         raise RuntimeError(
