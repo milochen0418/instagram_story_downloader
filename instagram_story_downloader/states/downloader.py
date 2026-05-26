@@ -58,6 +58,14 @@ class ArchiveMonthItem(TypedDict):
     story_urls: list[str]
 
 
+class ProfileCategoryItem(TypedDict):
+    id: str            # reel_id: numeric user_id for current stories, "highlight:XXX" for highlights
+    label: str         # "Today's Stories" or highlight title
+    count: int         # number of items (0 if unknown)
+    cover_url: str     # cover / thumbnail URL
+    category_type: str # "stories" | "highlight"
+
+
 # Browsers to try for cookies, in order of preference on macOS
 # Chrome first: Safari requires Full Disk Access which is usually blocked
 _BROWSERS_TO_TRY = ["chrome", "firefox", "safari", "edge", "chromium", "brave"]
@@ -251,6 +259,13 @@ _PW_UA = (
 )
 _PW_LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
 
+# URL path segments that are NOT Instagram usernames.
+_PROFILE_EXCLUDED_PATHS = {
+    "archive", "stories", "explore", "direct", "tv", "p", "reel", "reels",
+    "accounts", "ar", "about", "legal", "privacy", "help", "contact", "_",
+    "graphql", "challenge", "oauth", "login", "logout",
+}
+
 
 def _get_ig_session_cookies() -> tuple[dict[str, str], str]:
     """Return Instagram session cookies (plain dict) + browser name.
@@ -308,6 +323,221 @@ def _parse_ig_body(body: str) -> dict:
         s = s[9:]
     data = _json.loads(s)
     return data.get("payload", data)
+
+
+def _fetch_profile_info(
+    cookies: dict[str, str], username: str
+) -> list[dict]:
+    """Fetch active stories and highlights for an Instagram user profile.
+
+    Navigates to the user's profile page in a headless Chromium browser,
+    then uses in-page fetch() to call Instagram's internal API:
+      - /api/v1/users/web_profile_info/ → get numeric user_id
+      - /api/v1/feed/reels_media/?reel_ids=<user_id> → active stories
+      - /api/v1/highlights/<user_id>/highlights_tray/ → highlights list
+
+    Returns a list of ProfileCategoryItem dicts (today's stories first,
+    then highlights in tray order).  Raises RuntimeError if no categories
+    are found.
+    """
+    from playwright.sync_api import sync_playwright as _sync_playwright
+
+    categories: list[dict] = []
+
+    with _sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=_PW_LAUNCH_ARGS)
+        ctx = browser.new_context(user_agent=_PW_UA)
+        ctx.add_init_script(
+            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
+        )
+        ctx.add_cookies(_pw_cookies(cookies))
+        page = ctx.new_page()
+        page.goto(
+            f"https://www.instagram.com/{username}/",
+            wait_until="networkidle",
+            timeout=30000,
+        )
+
+        # ── Step 1: resolve numeric user_id ──────────────────────────
+        user_result = page.evaluate(
+            """async (uname) => {
+                try {
+                    const r = await fetch(
+                        '/api/v1/users/web_profile_info/?username=' + encodeURIComponent(uname),
+                        {
+                            credentials: 'include',
+                            headers: {
+                                'X-IG-App-ID': '936619743392459',
+                                'Accept': 'application/json',
+                            },
+                        }
+                    );
+                    return {status: r.status, body: await r.text()};
+                } catch(e) { return {error: String(e)}; }
+            }""",
+            username,
+        )
+        if user_result.get("error"):
+            browser.close()
+            raise RuntimeError(
+                f"Failed to fetch profile info: {user_result['error']}"
+            )
+        raw_body = user_result.get("body", "")
+        if not raw_body:
+            browser.close()
+            raise RuntimeError("Empty response from Instagram profile info API.")
+        try:
+            profile_data = _json.loads(raw_body)
+        except Exception:
+            browser.close()
+            raise RuntimeError("Invalid JSON from Instagram profile info API.")
+
+        user_obj = (profile_data.get("data") or {}).get("user") or {}
+        user_id = str(user_obj.get("id") or user_obj.get("pk") or "")
+        if not user_id:
+            browser.close()
+            raise RuntimeError(
+                f"Could not find user ID for @{username}. "
+                "The account may be private or the username does not exist."
+            )
+
+        # ── Step 2: active stories ────────────────────────────────────
+        stories_result = page.evaluate(
+            """async (uid) => {
+                try {
+                    const r = await fetch(
+                        '/api/v1/feed/reels_media/?reel_ids=' + encodeURIComponent(uid),
+                        {
+                            credentials: 'include',
+                            headers: {'X-IG-App-ID': '936619743392459', 'Accept': 'application/json'},
+                        }
+                    );
+                    return {status: r.status, body: await r.text()};
+                } catch(e) { return {error: String(e)}; }
+            }""",
+            user_id,
+        )
+        if not stories_result.get("error") and stories_result.get("status") == 200:
+            try:
+                stories_data = _json.loads(stories_result.get("body", "") or "{}")
+                reels_map = stories_data.get("reels") or {}
+                reel = reels_map.get(user_id) or reels_map.get(str(user_id))
+                if reel and reel.get("items"):
+                    items = reel["items"]
+                    cover_url = ""
+                    if items:
+                        first = items[0]
+                        cands = (
+                            (first.get("image_versions2") or {}).get("candidates") or []
+                        )
+                        if cands:
+                            cover_url = cands[0].get("url", "")
+                    categories.append(
+                        {
+                            "id": user_id,
+                            "label": "Today's Stories",
+                            "count": len(items),
+                            "cover_url": cover_url,
+                            "category_type": "stories",
+                        }
+                    )
+            except Exception as e:
+                logging.warning(f"_fetch_profile_info: active stories parse error: {e}")
+
+        # ── Step 3: highlights tray ───────────────────────────────────
+        hl_result = page.evaluate(
+            """async (uid) => {
+                try {
+                    const r = await fetch(
+                        '/api/v1/highlights/' + uid + '/highlights_tray/',
+                        {
+                            credentials: 'include',
+                            headers: {'X-IG-App-ID': '936619743392459', 'Accept': 'application/json'},
+                        }
+                    );
+                    return {status: r.status, body: await r.text()};
+                } catch(e) { return {error: String(e)}; }
+            }""",
+            user_id,
+        )
+        if not hl_result.get("error") and hl_result.get("status") == 200:
+            try:
+                hl_data = _json.loads(hl_result.get("body", "") or "{}")
+                for hl in (hl_data.get("tray") or []):
+                    # pk/id may come back as "highlight:17852481274006107" or just
+                    # the plain number; normalise to a bare numeric string.
+                    raw_pk = str(hl.get("pk") or hl.get("id") or "")
+                    hl_pk = raw_pk.rsplit(":", 1)[-1] if ":" in raw_pk else raw_pk
+                    if not hl_pk:
+                        continue
+                    title = hl.get("title") or "Highlight"
+                    cover_url = ""
+                    cover_media = hl.get("cover_media") or {}
+                    if cover_media:
+                        cropped = cover_media.get("cropped_image_version") or {}
+                        cover_url = cropped.get("url", "")
+                        if not cover_url:
+                            cands = (
+                                (cover_media.get("image_versions2") or {})
+                                .get("candidates") or []
+                            )
+                            if cands:
+                                cover_url = cands[0].get("url", "")
+                    media_count = int(hl.get("media_count") or 0)
+                    categories.append(
+                        {
+                            "id": f"highlight:{hl_pk}",
+                            "label": title,
+                            "count": media_count,
+                            "cover_url": cover_url,
+                            "category_type": "highlight",
+                        }
+                    )
+            except Exception as e:
+                logging.warning(f"_fetch_profile_info: highlights parse error: {e}")
+
+        # ── Step 4: convert CDN cover URLs → base64 data URIs ────────
+        # The Playwright page has instagram.com cookies; the user's browser
+        # (on localhost) does not, so raw CDN URLs fail to load.  Fetching
+        # them here and encoding as data URIs avoids the auth problem.
+        cover_urls = [c["cover_url"] for c in categories]
+        if any(cover_urls):
+            try:
+                data_uris = page.evaluate(
+                    """async (urls) => {
+                        return await Promise.all(urls.map(async (url) => {
+                            if (!url) return '';
+                            try {
+                                const r = await fetch(url, {credentials: 'include'});
+                                if (!r.ok) return '';
+                                const blob = await r.blob();
+                                return await new Promise((resolve) => {
+                                    const reader = new FileReader();
+                                    reader.onloadend = () => resolve(reader.result || '');
+                                    reader.onerror  = () => resolve('');
+                                    reader.readAsDataURL(blob);
+                                });
+                            } catch(e) { return ''; }
+                        }));
+                    }""",
+                    cover_urls,
+                )
+                if isinstance(data_uris, list):
+                    for i, uri in enumerate(data_uris):
+                        if uri and i < len(categories):
+                            categories[i]["cover_url"] = uri
+            except Exception as e:
+                logging.warning(f"_fetch_profile_info: cover data-URI conversion error: {e}")
+
+        browser.close()
+
+    if not categories:
+        raise RuntimeError(
+            f"No stories or highlights found for @{username}. "
+            "The account may be private, or there are no active stories/highlights."
+        )
+
+    return categories
 
 
 def _fetch_day_shells(cookies: dict[str, str]) -> list[dict]:
@@ -505,10 +735,16 @@ class DownloaderState(rx.State):
     archive_loading_progress: int = 0
     archive_loading_total: int = 0
     loading_month: str = ""  # year_month of the card currently being fetched
-    result_source: str = ""  # "url" | "archive"
-    result_source_label: str = ""  # URL string or month label e.g. "November 2018"
+    result_source: str = ""  # "url" | "archive" | "profile"
+    result_source_label: str = ""  # URL string, month label, or "Highlight — @user"
     lightbox_open: bool = False
     lightbox_index: int = 0
+    # Profile browser state (active when a profile URL is submitted in the URL tab)
+    profile_categories: list[ProfileCategoryItem] = []
+    profile_status: str = "idle"  # idle | loading | ready | error
+    profile_username: str = ""
+    profile_error: str = ""
+    loading_profile_category: str = ""  # id of the category card being fetched
 
     @rx.var
     def status_label(self) -> str:
@@ -611,16 +847,59 @@ class DownloaderState(rx.State):
             self.active_tab = "archive"
             self.status = "idle"
             self.error_message = ""
+            self.profile_status = "idle"
+            self.profile_categories = []
+            return
+
+        # Profile URL: instagram.com/username/ (single path segment, not a reserved path)
+        _profile_match = re.search(
+            r"instagram\.com/([A-Za-z0-9_.]+)/?(?:\?[^#]*)?\s*$", url
+        )
+        if _profile_match and _profile_match.group(1).lower() not in _PROFILE_EXCLUDED_PATHS:
+            _username = _profile_match.group(1)
+            self.profile_username = _username
+            self.profile_status = "loading"
+            self.profile_categories = []
+            self.profile_error = ""
+            self.media_items = []
+            self.status = "idle"
+            self.error_message = ""
+            yield
+            try:
+                loop = asyncio.get_running_loop()
+
+                def _fetch_cats() -> tuple[list, str]:
+                    _cookies, _browser = _get_ig_session_cookies()
+                    return _fetch_profile_info(_cookies, _username), _browser
+
+                cats, _used_browser = await loop.run_in_executor(None, _fetch_cats)
+                self.profile_categories = cats
+                self.profile_status = "ready"
+                self.session_loaded = True
+                self.session_username = _used_browser
+            except Exception as e:
+                logging.exception(f"Error fetching profile categories: {e}")
+                err_lower = str(e).lower()
+                if any(k in err_lower for k in ("login", "private", "session", "authenticate")):
+                    self.profile_error = (
+                        "Login required or private account. "
+                        "Please log in to Instagram in your browser first."
+                    )
+                else:
+                    self.profile_error = str(e)
+                self.profile_status = "error"
             return
 
         match = re.search(r"instagram\.com/stories/([^/]+)/(\d+)", url)
         if not match:
             self.status = "error"
             self.error_message = (
-                "Invalid URL. Must be an Instagram Story or Archive link "
-                "(e.g., instagram.com/stories/username/id/ or "
-                "instagram.com/stories/archive/id/)."
+                "Invalid URL. Must be an Instagram Story, Highlight, or profile link "
+                "(e.g., instagram.com/username/, instagram.com/stories/username/id/ or "
+                "instagram.com/stories/highlights/id/)."
             )
+            self.profile_status = "idle"
+            self.profile_categories = []
             return
 
         username = match.group(1)
@@ -1066,6 +1345,133 @@ class DownloaderState(rx.State):
         self.loading_month = ""
         self.is_loading = False
         # Scroll results into view after content is ready
+        yield rx.call_script(
+            "setTimeout(()=>{var el=document.getElementById('media-results');if(el)el.scrollIntoView({behavior:'smooth',block:'start'});},100)"
+        )
+
+    # ── Profile browser events ────────────────────────────────────────
+
+    @rx.event
+    async def select_profile_category(self, cat_id: str):
+        """Load all media for a profile category (current stories or a highlight).
+
+        Two strategies:
+        - Current stories (cat_id is a plain numeric user_id):
+            → _fetch_reels_by_ids via Playwright archive page (already proven)
+        - Highlights (cat_id starts with "highlight:"):
+            → yt-dlp with the direct stories/highlights/<id>/ URL
+              (same proven path as the single-URL highlight flow)
+        """
+        cat_label = ""
+        for c in self.profile_categories:
+            if c["id"] == cat_id:
+                cat_label = c["label"]
+                break
+
+        _profile_username = self.profile_username
+        self.is_loading = True
+        self.loading_profile_category = cat_id
+        self.status = "analyzing"
+        self.error_message = ""
+        self.media_items = []
+        yield
+
+        loop = asyncio.get_running_loop()
+        all_media: list[MediaItem] = []
+        used_browser = "none"
+
+        try:
+            if cat_id.startswith("highlight:"):
+                # ── Highlights: use yt-dlp with the direct highlight URL ──
+                # Strip "highlight:" prefix; guard against double-prefixed IDs.
+                numeric_id = cat_id[len("highlight:"):]
+                if ":" in numeric_id:               # e.g. "highlight:17852481274006107"
+                    numeric_id = numeric_id.rsplit(":", 1)[-1]
+                hl_url = f"https://www.instagram.com/stories/highlights/{numeric_id}/"
+
+                def _fetch_highlight() -> tuple[dict, str]:
+                    last_error: Exception | None = None
+                    for browser in _BROWSERS_TO_TRY:
+                        try:
+                            info = _extract_with_browser(hl_url, browser)
+                            if info:
+                                return info, browser
+                        except Exception as e:
+                            last_error = e
+                            continue
+                    raise last_error or Exception(
+                        "Failed to extract highlight from all browsers"
+                    )
+
+                info, used_browser = await loop.run_in_executor(
+                    None, _fetch_highlight
+                )
+                entries: list[dict] = []
+                if info.get("_type") == "playlist":
+                    entries = [e for e in (info.get("entries") or []) if e]
+                else:
+                    entries = [info]
+
+                for i, entry in enumerate(entries):
+                    item_id = entry.get("id") or f"hl_{numeric_id}_{i}"
+                    uname = (
+                        entry.get("uploader_id")
+                        or entry.get("uploader")
+                        or _profile_username
+                    )
+                    all_media.append(_build_media_item(entry, uname, item_id))
+
+            else:
+                # ── Current stories: _fetch_reels_by_ids (cat_id = user_id) ──
+                cookies, used_browser = await loop.run_in_executor(
+                    None, _get_ig_session_cookies
+                )
+
+                def _fetch_stories_reels() -> dict[str, dict]:
+                    return _fetch_reels_by_ids(cookies, [cat_id])
+
+                reels = await loop.run_in_executor(None, _fetch_stories_reels)
+                for reel_id, reel in reels.items():
+                    try:
+                        for i, entry in enumerate(_reel_to_entries(reel, reel_id)):
+                            item_id = entry.get("id") or f"pcat_{reel_id}_{i}"
+                            uname = (
+                                entry.get("uploader_id")
+                                or entry.get("uploader")
+                                or _profile_username
+                            )
+                            all_media.append(_build_media_item(entry, uname, item_id))
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            logging.exception(f"Error loading profile category: {e}")
+            err_lower = str(e).lower()
+            if any(k in err_lower for k in ("login", "private", "authenticate", "password", "session")):
+                self.error_message = (
+                    "Login required or private account. "
+                    "Please log in to Instagram in your browser first."
+                )
+            else:
+                self.error_message = f"Failed to load category: {e}"
+            self.status = "error"
+            self.loading_profile_category = ""
+            self.is_loading = False
+            return
+
+        if all_media:
+            self.media_items = all_media
+            self.status = "ready"
+            self.result_source = "profile"
+            self.result_source_label = f"{cat_label} — @{_profile_username}"
+            self.session_loaded = True
+            self.session_username = used_browser
+        else:
+            self.status = "error"
+            self.error_message = "No media found in this category."
+
+        self.loading_profile_category = ""
+        self.is_loading = False
         yield rx.call_script(
             "setTimeout(()=>{var el=document.getElementById('media-results');if(el)el.scrollIntoView({behavior:'smooth',block:'start'});},100)"
         )

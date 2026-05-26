@@ -6,6 +6,7 @@ from starlette.responses import StreamingResponse, JSONResponse
 from instagram_story_downloader.states.downloader import (
     DownloaderState,
     ArchiveMonthItem,
+    ProfileCategoryItem,
 )
 from instagram_story_downloader.components.media_card import media_card
 
@@ -158,6 +159,105 @@ def lightbox_modal() -> rx.Component:
             },
         ),
         rx.fragment(),
+    )
+
+
+def profile_category_card(cat: ProfileCategoryItem) -> rx.Component:
+    """A clickable card for a profile category (current stories or a highlight)."""
+    is_loading = DownloaderState.loading_profile_category == cat["id"]
+    has_cover = cat["cover_url"] != ""
+    return rx.el.button(
+        rx.cond(
+            is_loading,
+            rx.el.div(
+                rx.el.div(
+                    class_name="animate-spin h-5 w-5 border-2 border-indigo-600 border-t-transparent rounded-full",
+                ),
+                rx.el.span("Loading...", class_name="text-xs text-indigo-600 font-semibold mt-1"),
+                class_name="absolute inset-0 flex flex-col items-center justify-center bg-white/90 rounded-xl z-10",
+            ),
+            rx.fragment(
+                # Cover image (if available) or a type-appropriate icon
+                rx.cond(
+                    has_cover,
+                    rx.el.img(
+                        src=cat["cover_url"],
+                        class_name="w-14 h-14 rounded-full object-cover mb-2 border-2 border-indigo-200",
+                        style={"objectFit": "cover", "objectPosition": "center", "width": "56px", "height": "56px"},
+                    ),
+                    rx.cond(
+                        cat["category_type"] == "stories",
+                        rx.icon("play-circle", class_name="h-8 w-8 text-pink-500 mb-2"),
+                        rx.icon("star", class_name="h-8 w-8 text-indigo-500 mb-2"),
+                    ),
+                ),
+                rx.el.p(
+                    cat["label"],
+                    class_name="font-semibold text-gray-800 text-sm text-center leading-snug",
+                    style={"display": "-webkit-box", "-webkit-line-clamp": "2", "-webkit-box-orient": "vertical", "overflow": "hidden"},
+                ),
+                rx.cond(
+                    cat["count"] > 0,
+                    rx.el.p(
+                        rx.el.span(cat["count"]),
+                        rx.el.span(" items"),
+                        class_name="text-xs text-indigo-600 font-medium mt-0.5",
+                    ),
+                    rx.fragment(),
+                ),
+            ),
+        ),
+        on_click=lambda: DownloaderState.select_profile_category(cat["id"]),
+        disabled=DownloaderState.loading_profile_category != "",
+        class_name=rx.cond(
+            is_loading,
+            "relative flex flex-col items-center py-4 px-3 bg-white border-2 border-indigo-400 rounded-xl shadow-md transition-all duration-200 cursor-wait w-full min-h-[120px]",
+            "relative flex flex-col items-center py-4 px-3 bg-white border border-gray-200 rounded-xl hover:border-indigo-400 hover:shadow-md transition-all duration-200 cursor-pointer w-full min-h-[120px]",
+        ),
+    )
+
+
+def profile_browser_section() -> rx.Component:
+    """Category panel shown in the URL tab when a profile URL has been submitted."""
+    return rx.el.div(
+        # Loading spinner
+        rx.cond(
+            DownloaderState.profile_status == "loading",
+            rx.el.div(
+                rx.el.div(
+                    class_name="animate-spin h-8 w-8 border-4 border-indigo-600 border-t-transparent rounded-full mb-3 mx-auto"
+                ),
+                rx.el.p(
+                    "Loading @" + DownloaderState.profile_username + "...",
+                    class_name="text-gray-500 text-center text-sm",
+                ),
+                class_name="py-10",
+            ),
+        ),
+        # Error
+        rx.cond(
+            DownloaderState.profile_status == "error",
+            rx.el.div(
+                rx.icon("circle-alert", class_name="h-5 w-5 shrink-0 text-red-600"),
+                rx.el.p(DownloaderState.profile_error, class_name="text-sm"),
+                class_name="flex items-center gap-3 p-4 bg-red-50 text-red-700 rounded-xl border border-red-100",
+            ),
+        ),
+        # Categories grid
+        rx.cond(
+            DownloaderState.profile_status == "ready",
+            rx.el.div(
+                rx.el.p(
+                    "@" + DownloaderState.profile_username + " — click a category to load its stories",
+                    class_name="text-gray-500 text-sm text-center mb-5",
+                ),
+                rx.el.div(
+                    rx.foreach(DownloaderState.profile_categories, profile_category_card),
+                    class_name="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3",
+                ),
+            ),
+        ),
+        class_name="mt-6",
     )
 
 
@@ -341,35 +441,43 @@ def index() -> rx.Component:
                     # Conditional tab content
                     rx.cond(
                         DownloaderState.active_tab == "url",
-                        rx.el.form(
-                            rx.el.div(
+                        rx.el.div(
+                            rx.el.form(
                                 rx.el.div(
-                                    rx.icon(
-                                        "link",
-                                        class_name="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400",
-                                    ),
-                                    rx.el.input(
-                                        name="story_url",
-                                        placeholder="Paste Instagram Story or Archive URL here...",
-                                        class_name="w-full pl-12 pr-4 py-4 rounded-xl border border-gray-200 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-600 transition-all outline-none text-lg text-gray-800",
-                                    ),
-                                    class_name="relative flex-1",
-                                ),
-                                rx.el.button(
-                                    rx.cond(
-                                        DownloaderState.is_loading,
-                                        rx.el.div(
-                                            class_name="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"
+                                    rx.el.div(
+                                        rx.icon(
+                                            "link",
+                                            class_name="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400",
                                         ),
-                                        "Analyze Story",
+                                        rx.el.input(
+                                            name="story_url",
+                                            placeholder="Paste Instagram Story, Highlight, or Profile URL...",
+                                            class_name="w-full pl-12 pr-4 py-4 rounded-xl border border-gray-200 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-600 transition-all outline-none text-lg text-gray-800",
+                                        ),
+                                        class_name="relative flex-1",
                                     ),
-                                    type="submit",
-                                    disabled=DownloaderState.is_loading,
-                                    class_name="px-8 py-4 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-colors disabled:opacity-70 disabled:cursor-not-allowed whitespace-nowrap shadow-lg shadow-indigo-100",
+                                    rx.el.button(
+                                        rx.cond(
+                                            DownloaderState.is_loading,
+                                            rx.el.div(
+                                                class_name="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"
+                                            ),
+                                            "Analyze",
+                                        ),
+                                        type="submit",
+                                        disabled=DownloaderState.is_loading,
+                                        class_name="px-8 py-4 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-colors disabled:opacity-70 disabled:cursor-not-allowed whitespace-nowrap shadow-lg shadow-indigo-100",
+                                    ),
+                                    class_name="flex flex-col sm:flex-row gap-4",
                                 ),
-                                class_name="flex flex-col sm:flex-row gap-4",
+                                on_submit=DownloaderState.handle_submit,
                             ),
-                            on_submit=DownloaderState.handle_submit,
+                            # Profile categories (shown when a profile URL was submitted)
+                            rx.cond(
+                                DownloaderState.profile_status != "idle",
+                                profile_browser_section(),
+                                rx.fragment(),
+                            ),
                         ),
                         archive_browser_section(),
                     ),
@@ -422,13 +530,24 @@ def index() -> rx.Component:
                                             ),
                                             class_name="flex items-center gap-1.5",
                                         ),
-                                        rx.el.div(
-                                            rx.icon("calendar", class_name="h-3.5 w-3.5 text-indigo-400 shrink-0"),
-                                            rx.el.span(
-                                                DownloaderState.result_source_label,
-                                                class_name="text-xs text-indigo-600 font-semibold",
+                                        rx.cond(
+                                            DownloaderState.result_source == "profile",
+                                            rx.el.div(
+                                                rx.icon("user", class_name="h-3.5 w-3.5 text-pink-400 shrink-0"),
+                                                rx.el.span(
+                                                    DownloaderState.result_source_label,
+                                                    class_name="text-xs text-pink-600 font-semibold",
+                                                ),
+                                                class_name="flex items-center gap-1.5",
                                             ),
-                                            class_name="flex items-center gap-1.5",
+                                            rx.el.div(
+                                                rx.icon("calendar", class_name="h-3.5 w-3.5 text-indigo-400 shrink-0"),
+                                                rx.el.span(
+                                                    DownloaderState.result_source_label,
+                                                    class_name="text-xs text-indigo-600 font-semibold",
+                                                ),
+                                                class_name="flex items-center gap-1.5",
+                                            ),
                                         ),
                                     ),
                                     class_name="mb-3",
