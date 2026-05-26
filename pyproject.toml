@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "instagram-story-downloader"
+name = "mistories"
 version = "0.1.0"
-description = "Instagram Story Downloader built with Reflex"
+description = "MiStories — back up your Instagram Stories, built with Reflex"
 authors = []
 readme = "README.md"
 

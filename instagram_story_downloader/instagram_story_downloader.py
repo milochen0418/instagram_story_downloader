@@ -269,10 +269,10 @@ def index() -> rx.Component:
                 rx.el.div(
                     rx.el.div(
                         rx.icon(
-                            "shield-check", class_name="h-8 w-8 text-indigo-600"
+                            "camera", class_name="h-8 w-8 text-pink-500"
                         ),
                         rx.el.h1(
-                            "Instagram Story Downloader",
+                            "MiStories",
                             class_name="text-2xl font-bold text-gray-900",
                         ),
                         class_name="flex items-center gap-3",
@@ -552,5 +552,6 @@ app._api.add_route("/proxy-download", proxy_download, methods=["GET"])
 app.add_page(
     index,
     route="/",
+    title="MiStories",
     on_load=[DownloaderState.load_session, DownloaderState.setup_client_scripts],
 )

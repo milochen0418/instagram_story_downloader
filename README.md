@@ -1,6 +1,6 @@
-# Instagram Story Downloader
+# MiStories
 
- by Python Reflex
+Back up your Instagram Stories — built with Python Reflex
 > Important: Before working on this project, read [AGENTS.md](AGENTS.md) for required workflows and tooling expectations.
 
 ## Getting Started
