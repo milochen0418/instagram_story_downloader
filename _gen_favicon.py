@@ -65,9 +65,9 @@ def make_pixels(size: int) -> list[list[tuple[int, int, int, int]]]:
                 row.append((0, 0, 0, 0))
                 continue
 
-            # Interior fill (dark, like IG dark bg)
+            # Interior: transparent
             if dist < inner_r - 0.5:
-                row.append((18, 18, 18, 255))
+                row.append((0, 0, 0, 0))
                 continue
 
             # Gradient ring
@@ -77,12 +77,9 @@ def make_pixels(size: int) -> list[list[tuple[int, int, int, int]]]:
             alpha_ring  = aa_alpha(dist, inner_r, outer_r)
 
             if dist < inner_r + 0.5:
-                # Blend ring colour over dark interior at inner edge
-                f = alpha_ring
-                fr = round(r * f + 18 * (1 - f))
-                fg = round(g * f + 18 * (1 - f))
-                fb = round(b * f + 18 * (1 - f))
-                row.append((fr, fg, fb, 255))
+                # Fade ring colour to transparent at inner edge
+                a = round(alpha_ring * 255)
+                row.append((r, g, b, a))
             else:
                 a = round(alpha_ring * 255)
                 row.append((r, g, b, a))
