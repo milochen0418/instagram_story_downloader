@@ -1,7 +1,6 @@
 """
 Generate assets/favicon.ico — MiStories branding.
-Design: Instagram-style gradient ring, transparent centre, no letter.
-The ring alone is the strongest IG Story visual symbol.
+Design: IG gradient ring + vector-rendered "M" (distance-field AA, smooth diagonals).
 Pure Python — no external dependencies.
 """
 import math
@@ -10,7 +9,7 @@ import zlib
 
 SIZE = 32
 
-# Official IG gradient: yellow → orange → red → pink → magenta → purple → blue
+# Official IG gradient: yellow -> orange -> red -> pink -> magenta -> purple -> blue
 STOPS = [
     (0.00, 0xFC, 0xAF, 0x45),
     (0.18, 0xF7, 0x77, 0x37),
@@ -32,31 +31,44 @@ def lerp_stops(t):
     return STOPS[-1][1], STOPS[-1][2], STOPS[-1][3]
 
 
-# Bold "M" glyph: 7 cols × 7 rows, rendered at 2× scale = 14×14 px, centred
-M_BITMAP = [
-    [1, 0, 0, 0, 0, 0, 1],
-    [1, 1, 0, 0, 0, 1, 1],
-    [1, 0, 1, 0, 1, 0, 1],
-    [1, 0, 0, 1, 0, 0, 1],
-    [1, 0, 0, 0, 0, 0, 1],
-    [1, 0, 0, 0, 0, 0, 1],
-    [1, 0, 0, 0, 0, 0, 1],
-]
-_M_SCALE = 2
-_M_COLS  = len(M_BITMAP[0]) * _M_SCALE  # 14
-_M_ROWS  = len(M_BITMAP)    * _M_SCALE  # 14
+def seg_dist(px, py, ax, ay, bx, by):
+    """Exact distance from point (px,py) to segment (ax,ay)-(bx,by)."""
+    dx, dy = bx - ax, by - ay
+    len2 = dx*dx + dy*dy
+    if len2 < 1e-12:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px-ax)*dx + (py-ay)*dy) / len2))
+    return math.hypot(px - (ax + t*dx), py - (ay + t*dy))
 
 
-def is_m_pixel(x, y, size):
-    x_off = (size - _M_COLS) // 2
-    y_off = (size - _M_ROWS) // 2
-    lx, ly = x - x_off, y - y_off
-    if lx < 0 or lx >= _M_COLS or ly < 0 or ly >= _M_ROWS:
-        return False
-    return bool(M_BITMAP[ly // _M_SCALE][lx // _M_SCALE])
+def m_coverage(px, py, cx, cy, inner_r, stroke_w=2.1):
+    """
+    Anti-aliased coverage of pixel (px,py) for the vector M.
+    M is 4 line segments; fades smoothly at stroke edges.
+    """
+    hw = inner_r * 0.60
+    hh = inner_r * 0.63
+    xl, xr = cx - hw, cx + hw
+    yt, yb = cy - hh, cy + hh
+    xm = cx
+    ym = cy - hh * 0.08   # V-dip just above vertical centre
+
+    segs = [
+        (xl, yt, xl, yb),   # left vertical
+        (xl, yt, xm, ym),   # left diagonal
+        (xm, ym, xr, yt),   # right diagonal
+        (xr, yt, xr, yb),   # right vertical
+    ]
+    d = min(seg_dist(px, py, *s) for s in segs)
+    r = stroke_w / 2.0
+    if d <= r - 0.5:
+        return 1.0
+    if d <= r + 0.5:
+        return r + 0.5 - d
+    return 0.0
 
 
-def aa_alpha(dist, lo, hi):
+def aa_ring(dist, lo, hi):
     if dist < lo - 0.5 or dist > hi + 0.5:
         return 0.0
     if dist < lo + 0.5:
@@ -78,27 +90,17 @@ def make_pixels(size):
         for x in range(size):
             dx, dy = x - cx, y - cy
             dist = math.hypot(dx, dy)
-
-            # Fully outside → transparent
-            if dist > outer_r + 0.5:
-                row.append((0, 0, 0, 0))
-                continue
-
-            # Interior of the ring
-            if dist < inner_r - 0.5:
-                if is_m_pixel(x, y, size):
-                    # M pixels: coloured with the IG gradient (angle from centre)
-                    angle = (math.atan2(dy, -dx) / (2 * math.pi) + 0.5) % 1.0
-                    r, g, b = lerp_stops(angle)
-                    row.append((r, g, b, 255))
-                else:
-                    row.append((0, 0, 0, 0))  # transparent bg
-                continue
-
             angle = (math.atan2(dy, -dx) / (2 * math.pi) + 0.5) % 1.0
             r, g, b = lerp_stops(angle)
-            a = round(aa_alpha(dist, inner_r, outer_r) * 255)
-            row.append((r, g, b, a))
+
+            if dist > outer_r + 0.5:
+                row.append((0, 0, 0, 0))
+            elif dist < inner_r - 0.5:
+                cov = m_coverage(x, y, cx, cy, inner_r)
+                row.append((r, g, b, round(cov * 255)))
+            else:
+                a = round(aa_ring(dist, inner_r, outer_r) * 255)
+                row.append((r, g, b, a))
         rows.append(row)
     return rows
 
