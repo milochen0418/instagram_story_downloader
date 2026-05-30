@@ -1356,8 +1356,11 @@ class DownloaderState(rx.State):
         - Current stories (cat_id is a plain numeric user_id):
             → _fetch_reels_by_ids via Playwright archive page (already proven)
         - Highlights (cat_id starts with "highlight:"):
-            → yt-dlp with the direct stories/highlights/<id>/ URL
-              (same proven path as the single-URL highlight flow)
+            → Primary: _fetch_reels_by_ids with the full "highlight:XXXXX" ID
+              using /api/v1/feed/reels_media/ — same reliable internal API used
+              for stories and archive.
+            → Fallback: yt-dlp with the direct stories/highlights/<id>/ URL
+              (used only if the internal API returns no media)
         """
         cat_label = ""
         for c in self.profile_categories:
@@ -1379,44 +1382,76 @@ class DownloaderState(rx.State):
 
         try:
             if cat_id.startswith("highlight:"):
-                # ── Highlights: use yt-dlp with the direct highlight URL ──
-                # Strip "highlight:" prefix; guard against double-prefixed IDs.
-                numeric_id = cat_id[len("highlight:"):]
-                if ":" in numeric_id:               # e.g. "highlight:17852481274006107"
-                    numeric_id = numeric_id.rsplit(":", 1)[-1]
-                hl_url = f"https://www.instagram.com/stories/highlights/{numeric_id}/"
-
-                def _fetch_highlight() -> tuple[dict, str]:
-                    last_error: Exception | None = None
-                    for browser in _BROWSERS_TO_TRY:
-                        try:
-                            info = _extract_with_browser(hl_url, browser)
-                            if info:
-                                return info, browser
-                        except Exception as e:
-                            last_error = e
-                            continue
-                    raise last_error or Exception(
-                        "Failed to extract highlight from all browsers"
-                    )
-
-                info, used_browser = await loop.run_in_executor(
-                    None, _fetch_highlight
+                # ── Highlights: primary path uses the Instagram internal API via
+                # Playwright (same proven approach as current stories / archive).
+                # Passing the full "highlight:XXXXX" ID to /api/v1/feed/reels_media/
+                # is more reliable than yt-dlp, which can hit rate limits or return
+                # an empty playlist for certain highlight content types.
+                _hl_cookies, used_browser = await loop.run_in_executor(
+                    None, _get_ig_session_cookies
                 )
-                entries: list[dict] = []
-                if info.get("_type") == "playlist":
-                    entries = [e for e in (info.get("entries") or []) if e]
-                else:
-                    entries = [info]
 
-                for i, entry in enumerate(entries):
-                    item_id = entry.get("id") or f"hl_{numeric_id}_{i}"
-                    uname = (
-                        entry.get("uploader_id")
-                        or entry.get("uploader")
-                        or _profile_username
+                def _fetch_hl_reels() -> dict[str, dict]:
+                    return _fetch_reels_by_ids(_hl_cookies, [cat_id])
+
+                try:
+                    hl_reels = await loop.run_in_executor(None, _fetch_hl_reels)
+                    for reel_id, reel in hl_reels.items():
+                        try:
+                            for i, entry in enumerate(_reel_to_entries(reel, reel_id)):
+                                item_id = entry.get("id") or f"hl_{reel_id}_{i}"
+                                uname = (
+                                    entry.get("uploader_id")
+                                    or entry.get("uploader")
+                                    or _profile_username
+                                )
+                                all_media.append(_build_media_item(entry, uname, item_id))
+                        except Exception:
+                            pass
+                except Exception as _hl_api_err:
+                    logging.warning(
+                        f"Highlight internal API failed for {cat_id}: {_hl_api_err}; "
+                        "falling back to yt-dlp"
                     )
-                    all_media.append(_build_media_item(entry, uname, item_id))
+
+                # ── Fallback: yt-dlp (only if the internal API returned nothing) ──
+                if not all_media:
+                    numeric_id = cat_id[len("highlight:"):]
+                    if ":" in numeric_id:
+                        numeric_id = numeric_id.rsplit(":", 1)[-1]
+                    hl_url = f"https://www.instagram.com/stories/highlights/{numeric_id}/"
+
+                    def _fetch_highlight_ytdlp() -> tuple[dict, str]:
+                        last_error: Exception | None = None
+                        for browser in _BROWSERS_TO_TRY:
+                            try:
+                                info = _extract_with_browser(hl_url, browser)
+                                if info:
+                                    return info, browser
+                            except Exception as e:
+                                last_error = e
+                                continue
+                        raise last_error or Exception(
+                            "Failed to extract highlight from all browsers"
+                        )
+
+                    info, used_browser = await loop.run_in_executor(
+                        None, _fetch_highlight_ytdlp
+                    )
+                    entries: list[dict] = []
+                    if info.get("_type") == "playlist":
+                        entries = [e for e in (info.get("entries") or []) if e]
+                    else:
+                        entries = [info]
+
+                    for i, entry in enumerate(entries):
+                        item_id = entry.get("id") or f"hl_fb_{i}"
+                        uname = (
+                            entry.get("uploader_id")
+                            or entry.get("uploader")
+                            or _profile_username
+                        )
+                        all_media.append(_build_media_item(entry, uname, item_id))
 
             else:
                 # ── Current stories: _fetch_reels_by_ids (cat_id = user_id) ──
