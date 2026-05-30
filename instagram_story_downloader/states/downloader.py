@@ -1087,6 +1087,9 @@ class DownloaderState(rx.State):
             if m["id"] == item_id:
                 self.lightbox_open = True
                 self.lightbox_index = i
+                yield rx.call_script(
+                    "setTimeout(function(){var v=document.getElementById('lightbox-video');if(v){v.load();v.play().catch(function(){});}},100);"
+                )
                 return
 
     @rx.event
