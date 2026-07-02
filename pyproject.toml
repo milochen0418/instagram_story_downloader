@@ -10,6 +10,7 @@ python = "~3.11"
 reflex = "0.8.26"
 yt-dlp = "*"
 playwright = "^1.59.0"
+requests = "*"
 
 [build-system]
 requires = ["poetry-core"]
