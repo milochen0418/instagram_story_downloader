@@ -6,6 +6,9 @@ import re
 import urllib.parse
 import datetime
 import json as _json
+import os
+import tempfile
+import time
 import yt_dlp
 from reflex.config import get_config
 
@@ -66,9 +69,68 @@ class ProfileCategoryItem(TypedDict):
     category_type: str # "stories" | "highlight"
 
 
+# Instagram session cookies may be supplied via environment variables so the
+# app can authenticate in a headless/server deployment where there is no
+# desktop browser to read cookies from.
+_ENV_COOKIEFILE_PATH = ""
+
+
+def _env_cookie_dict() -> dict[str, str]:
+    """Read Instagram cookies from environment variables.
+
+    Supported (in priority order):
+      * IG_COOKIES  -- a raw Cookie header string, e.g.
+                       "sessionid=...; ds_user_id=...; csrftoken=..."
+      * IG_SESSIONID (+ optional IG_DS_USER_ID, IG_CSRFTOKEN)
+
+    Returns {} unless a sessionid is present.
+    """
+    cookies: dict[str, str] = {}
+    raw = os.environ.get("IG_COOKIES", "").strip()
+    if raw:
+        for part in raw.split(";"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if k:
+                    cookies[k] = v
+    for env_key, cookie_key in (
+        ("IG_SESSIONID", "sessionid"),
+        ("IG_DS_USER_ID", "ds_user_id"),
+        ("IG_CSRFTOKEN", "csrftoken"),
+    ):
+        val = os.environ.get(env_key, "").strip()
+        if val and cookie_key not in cookies:
+            cookies[cookie_key] = val
+    return cookies if cookies.get("sessionid") else {}
+
+
+def _env_cookiefile() -> str:
+    """Write env cookies to a Netscape cookies.txt for yt-dlp; cache the path."""
+    global _ENV_COOKIEFILE_PATH
+    cookies = _env_cookie_dict()
+    if not cookies:
+        return ""
+    if _ENV_COOKIEFILE_PATH and os.path.exists(_ENV_COOKIEFILE_PATH):
+        return _ENV_COOKIEFILE_PATH
+    fd, cookiefile = tempfile.mkstemp(prefix="ig_cookies_", suffix=".txt")
+    expiry = int(time.time()) + 3600 * 24 * 365
+    lines = ["# Netscape HTTP Cookie File\n"]
+    for name, value in cookies.items():
+        # domain  include_subdomains  path  secure  expiry  name  value
+        lines.append(f".instagram.com\tTRUE\t/\tTRUE\t{expiry}\t{name}\t{value}\n")
+    with os.fdopen(fd, "w") as fh:
+        fh.writelines(lines)
+    _ENV_COOKIEFILE_PATH = cookiefile
+    return cookiefile
+
+
 # Browsers to try for cookies, in order of preference on macOS
 # Chrome first: Safari requires Full Disk Access which is usually blocked
-_BROWSERS_TO_TRY = ["chrome", "firefox", "safari", "edge", "chromium", "brave"]
+_BASE_BROWSERS = ["chrome", "firefox", "safari", "edge", "chromium", "brave"]
+# When env cookies are configured, try them first (pseudo-browser id "env").
+_BROWSERS_TO_TRY = (["env"] if _env_cookie_dict() else []) + _BASE_BROWSERS
 
 
 def _best_thumbnail(thumbnails: list) -> str:
@@ -84,6 +146,8 @@ def _best_thumbnail(thumbnails: list) -> str:
 
 def _check_browser_has_instagram_cookies(browser: str) -> bool:
     """Return True if the given browser has Instagram session cookies."""
+    if browser == "env":
+        return bool(_env_cookie_dict())
     try:
         ydl_opts = {
             "cookiesfrombrowser": (browser,),
@@ -102,12 +166,20 @@ def _check_browser_has_instagram_cookies(browser: str) -> bool:
 
 
 def _extract_with_browser(url: str, browser: str) -> dict:
-    ydl_opts = {
-        "cookiesfrombrowser": (browser,),
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": False,
-    }
+    if browser == "env":
+        ydl_opts = {
+            "cookiefile": _env_cookiefile(),
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": False,
+        }
+    else:
+        ydl_opts = {
+            "cookiesfrombrowser": (browser,),
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": False,
+        }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -270,10 +342,16 @@ _PROFILE_EXCLUDED_PATHS = {
 def _get_ig_session_cookies() -> tuple[dict[str, str], str]:
     """Return Instagram session cookies (plain dict) + browser name.
 
-    Tries each browser in _BROWSERS_TO_TRY in order.
-    Raises RuntimeError if no browser has an Instagram session.
+    Prefers cookies supplied via environment variables (headless/server),
+    otherwise tries each desktop browser in _BROWSERS_TO_TRY in order.
+    Raises RuntimeError if no Instagram session is available.
     """
+    env_cookies = _env_cookie_dict()
+    if env_cookies:
+        return env_cookies, "env"
     for browser in _BROWSERS_TO_TRY:
+        if browser == "env":
+            continue
         try:
             cookies: dict[str, str] = {}
             ydl_opts = {

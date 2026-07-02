@@ -405,10 +405,10 @@ def index() -> rx.Component:
                                     class_name="h-2 w-2 rounded-full bg-amber-500"
                                 ),
                                 rx.el.span(
-                                    "No browser session detected — log in to Instagram in Chrome/Firefox first",
+                                    "No session detected — log in to Instagram in Chrome/Firefox, or set IG_SESSIONID (server deployments)",
                                     class_name="text-sm font-medium text-amber-700",
                                 ),
-                                title="Log in to Instagram in Chrome or Firefox, then refresh this page",
+                                title="Log in to Instagram in Chrome or Firefox, then refresh this page. On a server, set the IG_SESSIONID environment variable to your Instagram sessionid cookie.",
                                 class_name="flex items-center gap-2 bg-amber-50 px-4 py-2 rounded-full border border-amber-100 cursor-help",
                             ),
                         ),
