@@ -103,7 +103,14 @@ def _env_cookie_dict() -> dict[str, str]:
         val = os.environ.get(env_key, "").strip()
         if val and cookie_key not in cookies:
             cookies[cookie_key] = val
-    return cookies if cookies.get("sessionid") else {}
+    # A real Instagram sessionid looks like "<userid>%3A<token>%3A<n>%3A<...>"
+    # and is fairly long. Reject obviously-wrong values (e.g. a pasted command
+    # or filename) so the UI does not show a false "session detected" and the
+    # user gets a clear "no valid session" hint instead.
+    sid = cookies.get("sessionid", "")
+    if len(sid) < 20 or not (":" in sid or "%3a" in sid.lower()):
+        return {}
+    return cookies
 
 
 def _env_cookiefile() -> str:
