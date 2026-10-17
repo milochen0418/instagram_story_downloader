@@ -6,8 +6,10 @@ authors = []
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "~3.11"
-reflex = "0.8.26"
+# 3.11 floor: Reflex 0.10 and the re_ddns smart-launcher image (python:3.11).
+# <3.16 cap: verified up to 3.15.
+python = ">=3.11,<3.16"
+reflex = "0.10.0"
 yt-dlp = "*"
 playwright = "^1.59.0"
 requests = "*"
